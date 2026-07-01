@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import mimetypes
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -176,6 +177,53 @@ HTML = r"""
     }
 
     .status-text { overflow-wrap: anywhere; }
+    .video-preview {
+      display: none;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfd;
+    }
+    .video-preview.active { display: block; }
+    .video-preview video {
+      width: 100%;
+      max-height: 420px;
+      background: #101418;
+      border-radius: 8px;
+    }
+    .video-title {
+      margin-bottom: 8px;
+      color: var(--text);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .video-meta {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 6px 10px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .video-meta dt {
+      color: var(--muted);
+      margin: 0;
+    }
+    .video-meta dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+    .video-link {
+      display: inline;
+      border: 0;
+      background: transparent;
+      color: var(--accent);
+      padding: 0;
+      height: auto;
+      min-width: 0;
+      text-align: left;
+      font-weight: 650;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
     .table-wrap { overflow: auto; max-height: 650px; }
     table { width: 100%; border-collapse: collapse; min-width: 980px; }
     th, td {
@@ -250,6 +298,11 @@ HTML = r"""
           <div class="status-text" id="resultStatus">경로 적용 후 검색할 수 있습니다.</div>
           <div id="resultCount"></div>
         </div>
+        <div class="video-preview" id="videoPreview">
+          <div class="video-title" id="videoTitle"></div>
+          <dl class="video-meta" id="videoMeta"></dl>
+          <video id="videoPlayer" controls preload="metadata"></video>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -276,13 +329,16 @@ HTML = r"""
     const checkBtn = document.getElementById('checkBtn');
     const searchBtn = document.getElementById('searchBtn');
     const verifyBtn = document.getElementById('verifyBtn');
-    const summary = document.getElementById('summary');
     const positions = document.getElementById('positions');
     const mode = document.getElementById('mode');
     const query = document.getElementById('query');
     const results = document.getElementById('results');
     const resultStatus = document.getElementById('resultStatus');
     const resultCount = document.getElementById('resultCount');
+    const videoPreview = document.getElementById('videoPreview');
+    const videoTitle = document.getElementById('videoTitle');
+    const videoMeta = document.getElementById('videoMeta');
+    const videoPlayer = document.getElementById('videoPlayer');
     let verifiedRoot = '';
 
     function escapeHtml(value) {
@@ -320,9 +376,9 @@ HTML = r"""
         results.innerHTML = '<tr><td colspan="7" class="empty">검색 결과가 없습니다.</td></tr>';
         return;
       }
-      results.innerHTML = data.matches.map(row => `
+      results.innerHTML = data.matches.map((row, index) => `
         <tr>
-          <td class="path">${escapeHtml(row.video)}</td>
+          <td class="path"><button class="video-link" data-index="${index}">${escapeHtml(row.video)}</button></td>
           <td>${escapeHtml(row.position || '')}</td>
           <td><span class="pill">${escapeHtml(row.flag || '')}</span></td>
           <td>${escapeHtml(row.line || '')}</td>
@@ -331,6 +387,29 @@ HTML = r"""
           <td>${row.video_exists ? 'True' : 'False'}</td>
         </tr>
       `).join('');
+      results.querySelectorAll('.video-link').forEach(button => {
+        button.addEventListener('click', () => playVideo(data.matches[Number(button.dataset.index)]));
+      });
+    }
+
+    function playVideo(row) {
+      if (!row || !row.video_exists) {
+        resultStatus.textContent = '재생할 영상 파일이 없습니다.';
+        return;
+      }
+      const src = `/api/video?${rootQuery()}&path=${encodeURIComponent(row.video)}`;
+      videoTitle.textContent = row.video;
+      videoMeta.innerHTML = `
+        <dt>포지션</dt><dd>${escapeHtml(row.position || '')}</dd>
+        <dt>flag</dt><dd>${escapeHtml(row.flag || '')}</dd>
+        <dt>라인</dt><dd>${escapeHtml(row.line || '')}</dd>
+        <dt>key</dt><dd>${escapeHtml(row.key || '')}</dd>
+        <dt>원본 라벨</dt><dd>${escapeHtml(row.raw || '')}</dd>
+        <dt>positions.txt</dt><dd>${escapeHtml(row.positions_txt || '')}</dd>
+      `;
+      videoPlayer.src = src;
+      videoPreview.classList.add('active');
+      videoPlayer.play().catch(() => {});
     }
 
     function currentRoot() {
@@ -359,6 +438,9 @@ HTML = r"""
       setSearchEnabled(false);
       verifiedRoot = '';
       positions.innerHTML = '';
+      videoPlayer.removeAttribute('src');
+      videoMeta.innerHTML = '';
+      videoPreview.classList.remove('active');
       results.innerHTML = '<tr><td colspan="7" class="empty">경로 확인중...</td></tr>';
       resultCount.textContent = '';
       rootPath.textContent = root;
@@ -417,7 +499,6 @@ HTML = r"""
     (async function init() {
       setSearchEnabled(false);
       datasetRootInput.value = '';
-      summary.innerHTML = '';
       positions.innerHTML = '<div class="empty">경로 적용 후 표시됩니다.</div>';
       rootPath.textContent = '데이터셋 경로를 입력하고 적용하세요.';
       resultStatus.textContent = '경로 적용 전입니다.';
@@ -545,6 +626,24 @@ def looks_like_video_query(query: str) -> bool:
     return lowered.endswith(tuple(VIDEO_EXTENSIONS)) or "-play" in lowered or is_path_like_query(query)
 
 
+
+def resolve_video_file(dataset_root: Path, raw_video_path: str) -> Path | None:
+    if not raw_video_path:
+        return None
+
+    video_path = resolve_dataset_root(raw_video_path)
+    if not video_path.exists() or not video_path.is_file():
+        return None
+
+    if video_path.suffix.lower() not in VIDEO_EXTENSIONS:
+        return None
+
+    try:
+        video_path.resolve().relative_to(dataset_root.resolve())
+    except ValueError:
+        return None
+
+    return video_path
 def search_video_rows(dataset_root: Path, query: str) -> list[dict[str, object]]:
     query_lower = query.lower()
     path_like = is_path_like_query(query)
@@ -616,12 +715,70 @@ class DatasetLabelHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_video_file(self, video_path: Path) -> None:
+        file_size = video_path.stat().st_size
+        content_type = mimetypes.guess_type(video_path.name)[0] or "application/octet-stream"
+        range_header = self.headers.get("Range")
+
+        start = 0
+        end = file_size - 1
+        status = HTTPStatus.OK
+
+        if range_header and range_header.startswith("bytes="):
+            status = HTTPStatus.PARTIAL_CONTENT
+            range_value = range_header.removeprefix("bytes=").split(",", 1)[0]
+            start_text, _, end_text = range_value.partition("-")
+            if start_text:
+                start = int(start_text)
+            if end_text:
+                end = int(end_text)
+            end = min(end, file_size - 1)
+
+        if start > end or start >= file_size:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{file_size}")
+            self.end_headers()
+            return
+
+        length = end - start + 1
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+        self.end_headers()
+
+        with video_path.open("rb") as video_file:
+            video_file.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = video_file.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self.send_html()
             return
 
+        if parsed.path == "/api/video":
+            params = parse_qs(parsed.query)
+            root = get_root_from_params(params)
+            if not root.exists():
+                self.send_json({"error": f"Dataset root not found: {root}"}, HTTPStatus.BAD_REQUEST)
+                return
+
+            raw_video_path = (params.get("path") or [""])[0]
+            video_path = resolve_video_file(root, raw_video_path)
+            if video_path is None:
+                self.send_json({"error": "video file not found or not allowed"}, HTTPStatus.NOT_FOUND)
+                return
+
+            self.send_video_file(video_path)
+            return
         if parsed.path == "/api/status":
             params = parse_qs(parsed.query)
             root = get_root_from_params(params)
@@ -678,6 +835,16 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
+
+
+
+
+
 
 
 
