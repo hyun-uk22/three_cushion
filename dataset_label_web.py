@@ -86,6 +86,7 @@ HTML = r"""
     .metric.ok strong { color: var(--ok); }
     .metric.bad strong { color: var(--bad); }
 
+    .path-toolbar,
     .toolbar {
       display: grid;
       grid-template-columns: 170px minmax(220px, 1fr) auto auto;
@@ -98,6 +99,8 @@ HTML = r"""
       padding: 12px;
       margin-bottom: 12px;
     }
+
+    .path-toolbar { grid-template-columns: minmax(260px, 1fr) auto; }
 
     select, input, button {
       height: 38px;
@@ -119,6 +122,7 @@ HTML = r"""
       min-width: 76px;
     }
     button.secondary { background: #fff; color: var(--accent); }
+    button:disabled { cursor: not-allowed; opacity: 0.45; }
 
     .content {
       display: grid;
@@ -206,7 +210,8 @@ HTML = r"""
     @media (max-width: 920px) {
       header, main { padding-left: 14px; padding-right: 14px; }
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .toolbar { grid-template-columns: 1fr; }
+      .path-toolbar,
+    .toolbar { grid-template-columns: 1fr; }
       .content { grid-template-columns: 1fr; }
       .position-list { max-height: 260px; }
     }
@@ -215,10 +220,14 @@ HTML = r"""
 <body>
   <header>
     <h1>ThreeCushion Dataset Labels</h1>
-    <div class="root-path" id="rootPath">점검중...</div>
+    <div class="root-path" id="rootPath">데이터셋 경로를 입력하고 적용하세요.</div>
   </header>
   <main>
-    <section class="summary" id="summary"></section>
+    <section class="path-toolbar">
+      <input id="datasetRootInput" placeholder="데이터셋 경로 입력: E:\password_data\dataset 또는 /mnt/e/password_data/dataset" autocomplete="off" />
+      <button id="checkBtn">경로 적용</button>
+    </section>
+    
 
     <section class="toolbar">
       <select id="mode">
@@ -227,8 +236,8 @@ HTML = r"""
         <option value="position">포지션</option>
       </select>
       <input id="query" placeholder="예: 뒤돌리기 또는 00020002-y-play.mp4" autocomplete="off" />
-      <button id="searchBtn">검색</button>
-      <button class="secondary" id="verifyBtn">재점검</button>
+      <button id="searchBtn" disabled>검색</button>
+      <button class="secondary" id="verifyBtn" disabled>재점검</button>
     </section>
 
     <section class="content">
@@ -238,7 +247,7 @@ HTML = r"""
       </aside>
       <section class="panel">
         <div class="results-head">
-          <div class="status-text" id="resultStatus">점검 후 검색할 수 있습니다.</div>
+          <div class="status-text" id="resultStatus">경로 적용 후 검색할 수 있습니다.</div>
           <div id="resultCount"></div>
         </div>
         <div class="table-wrap">
@@ -263,6 +272,10 @@ HTML = r"""
 
   <script>
     const rootPath = document.getElementById('rootPath');
+    const datasetRootInput = document.getElementById('datasetRootInput');
+    const checkBtn = document.getElementById('checkBtn');
+    const searchBtn = document.getElementById('searchBtn');
+    const verifyBtn = document.getElementById('verifyBtn');
     const summary = document.getElementById('summary');
     const positions = document.getElementById('positions');
     const mode = document.getElementById('mode');
@@ -270,6 +283,7 @@ HTML = r"""
     const results = document.getElementById('results');
     const resultStatus = document.getElementById('resultStatus');
     const resultCount = document.getElementById('resultCount');
+    let verifiedRoot = '';
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>'"]/g, ch => ({
@@ -282,24 +296,6 @@ HTML = r"""
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || res.statusText);
       return data;
-    }
-
-    function renderSummary(data) {
-      rootPath.textContent = data.dataset_root;
-      const metrics = [
-        ['폴더', data.folders],
-        ['영상', data.videos_total],
-        ['라벨', data.labels_total],
-        ['라벨만 있음', data.labels_without_video, data.labels_without_video === 0],
-        ['영상만 있음', data.videos_without_label, data.videos_without_label === 0],
-        ['파싱 오류', data.parse_errors, data.parse_errors === 0],
-      ];
-      summary.innerHTML = metrics.map(([label, value, ok]) => `
-        <div class="metric ${ok === undefined ? '' : ok ? 'ok' : 'bad'}">
-          <span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong>
-        </div>
-      `).join('');
-      resultStatus.textContent = data.ok ? '점검 성공. 검색할 수 있습니다.' : '점검 실패. 문제 항목을 확인하세요.';
     }
 
     function renderPositions(items) {
@@ -337,24 +333,70 @@ HTML = r"""
       `).join('');
     }
 
+    function currentRoot() {
+      return datasetRootInput.value.trim();
+    }
+
+    function rootQuery() {
+      return `root=${encodeURIComponent(currentRoot())}`;
+    }
+
+    function setSearchEnabled(enabled) {
+      searchBtn.disabled = !enabled;
+      verifyBtn.disabled = !enabled;
+      query.disabled = !enabled;
+      mode.disabled = !enabled;
+    }
+
     async function verify() {
-      resultStatus.textContent = '점검중...';
-      const data = await loadJson('/api/status');
-      renderSummary(data);
+      const root = currentRoot();
+      if (!root) {
+        resultStatus.textContent = '데이터셋 경로를 입력하세요.';
+        datasetRootInput.focus();
+        return;
+      }
+
+      setSearchEnabled(false);
+      verifiedRoot = '';
+      positions.innerHTML = '';
+      results.innerHTML = '<tr><td colspan="7" class="empty">경로 확인중...</td></tr>';
+      resultCount.textContent = '';
+      rootPath.textContent = root;
+      resultStatus.textContent = '경로 확인중...';
+
+      try {
+        const data = await loadJson(`/api/positions?${rootQuery()}`);
+        verifiedRoot = root;
+        renderPositions(data.positions);
+        setSearchEnabled(true);
+        rootPath.textContent = root;
+        resultStatus.textContent = `경로 적용 완료. 포지션 ${data.positions.length}개를 불러왔습니다.`;
+        results.innerHTML = '<tr><td colspan="7" class="empty">검색어를 입력하세요.</td></tr>';
+      } catch (err) {
+        positions.innerHTML = '';
+        rootPath.textContent = root;
+        resultStatus.textContent = err.message;
+        results.innerHTML = '<tr><td colspan="7" class="empty">경로 확인 실패</td></tr>';
+        setSearchEnabled(false);
+      }
     }
 
     async function loadPositions() {
-      const data = await loadJson('/api/positions');
+      const data = await loadJson(`/api/positions?${rootQuery()}`);
       renderPositions(data.positions);
     }
 
     async function search() {
       const q = query.value.trim();
+      if (!verifiedRoot) {
+        resultStatus.textContent = '경로를 먼저 적용하세요.';
+        return;
+      }
       if (!q) return;
       resultStatus.textContent = '검색중...';
       resultCount.textContent = '';
       try {
-        const data = await loadJson(`/api/search?mode=${encodeURIComponent(mode.value)}&q=${encodeURIComponent(q)}`);
+        const data = await loadJson(`/api/search?${rootQuery()}&mode=${encodeURIComponent(mode.value)}&q=${encodeURIComponent(q)}`);
         renderResults(data);
       } catch (err) {
         resultStatus.textContent = err.message;
@@ -362,20 +404,23 @@ HTML = r"""
       }
     }
 
-    document.getElementById('searchBtn').addEventListener('click', search);
-    document.getElementById('verifyBtn').addEventListener('click', verify);
+    checkBtn.addEventListener('click', verify);
+    searchBtn.addEventListener('click', search);
+    verifyBtn.addEventListener('click', verify);
+    datasetRootInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') verify();
+    });
     query.addEventListener('keydown', event => {
       if (event.key === 'Enter') search();
     });
 
     (async function init() {
-      try {
-        await verify();
-        await loadPositions();
-      } catch (err) {
-        rootPath.textContent = err.message;
-        resultStatus.textContent = '점검 실패';
-      }
+      setSearchEnabled(false);
+      datasetRootInput.value = '';
+      summary.innerHTML = '';
+      positions.innerHTML = '<div class="empty">경로 적용 후 표시됩니다.</div>';
+      rootPath.textContent = '데이터셋 경로를 입력하고 적용하세요.';
+      resultStatus.textContent = '경로 적용 전입니다.';
     })();
   </script>
 </body>
@@ -383,6 +428,36 @@ HTML = r"""
 """
 
 
+
+def resolve_dataset_root(raw_root: str | None) -> Path:
+    raw = (raw_root or str(DEFAULT_DATASET_ROOT)).strip().strip('"')
+    if not raw:
+        return DEFAULT_DATASET_ROOT
+
+    normalized = raw.replace("/", "\\") if len(raw) >= 2 and raw[1] == ":" else raw
+    candidates = [Path(raw), Path(normalized)]
+
+    if len(raw) >= 3 and raw[1] == ":" and raw[2] in {"\\", "/"}:
+        drive = raw[0].lower()
+        rest = raw[3:].replace("\\", "/")
+        candidates.append(Path(f"/mnt/{drive}/{rest}"))
+
+    if raw.startswith("/mnt/") and len(raw) > 7:
+        parts = raw.split("/")
+        if len(parts) >= 4 and len(parts[2]) == 1:
+            drive = parts[2].upper()
+            rest = "\\".join(parts[3:])
+            candidates.append(Path(f"{drive}:\\{rest}"))
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
+def get_root_from_params(params: dict[str, list[str]]) -> Path:
+    return resolve_dataset_root((params.get("root") or [None])[0])
 def label_to_dict(video_path: Path, row, video_exists: bool = True) -> dict[str, object]:
     return {
         "video": str(video_path),
@@ -548,16 +623,28 @@ class DatasetLabelHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/status":
-            data = dataset_status(self.dataset_root)
+            params = parse_qs(parsed.query)
+            root = get_root_from_params(params)
+            data = dataset_status(root)
             self.send_json(data, HTTPStatus.OK if data.get("ok") else HTTPStatus.BAD_REQUEST)
             return
 
         if parsed.path == "/api/positions":
-            self.send_json({"positions": position_counts(self.dataset_root)})
+            params = parse_qs(parsed.query)
+            root = get_root_from_params(params)
+            if not root.exists():
+                self.send_json({"error": f"Dataset root not found: {root}"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"positions": position_counts(root)})
             return
 
         if parsed.path == "/api/search":
             params = parse_qs(parsed.query)
+            root = get_root_from_params(params)
+            if not root.exists():
+                self.send_json({"error": f"Dataset root not found: {root}"}, HTTPStatus.BAD_REQUEST)
+                return
+
             query = (params.get("q") or [""])[0].strip()
             mode = (params.get("mode") or ["auto"])[0]
             if not query:
@@ -565,10 +652,10 @@ class DatasetLabelHandler(BaseHTTPRequestHandler):
                 return
 
             if mode == "video" or (mode == "auto" and looks_like_video_query(query)):
-                matches = search_video_rows(self.dataset_root, query)
+                matches = search_video_rows(root, query)
                 label = "video"
             else:
-                matches = search_position_rows(self.dataset_root, query)
+                matches = search_position_rows(root, query)
                 label = "position"
 
             self.send_json({"type": label, "query": query, "matches": matches, "message": f"{query} 검색 결과"})
@@ -576,15 +663,9 @@ class DatasetLabelHandler(BaseHTTPRequestHandler):
 
         self.send_json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
-
 def main() -> int:
     server = ThreadingHTTPServer((HOST, PORT), DatasetLabelHandler)
-    print(f"점검중... dataset_root={DatasetLabelHandler.dataset_root}")
-    status = dataset_status(DatasetLabelHandler.dataset_root)
-    if not status.get("ok"):
-        print("점검 실패. 웹 UI는 실행하지만 상태 화면에서 문제를 확인하세요.")
-    else:
-        print("점검 성공. 웹 UI를 시작합니다.")
+    print("웹 UI 서버를 시작합니다.")
     print(f"http://{HOST}:{PORT}")
     try:
         server.serve_forever()
@@ -597,3 +678,12 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
+
+
+
+
