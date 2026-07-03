@@ -8,7 +8,6 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from check_dataset_labels import (
-    DEFAULT_DATASET_ROOT,
     VIDEO_EXTENSIONS,
     collect_videos,
     is_path_like_query,
@@ -16,8 +15,9 @@ from check_dataset_labels import (
     parse_positions_file,
 )
 
-HOST = "12.0.0.1"
+HOST = "0.0.0.0"
 PORT = 8765
+DEFAULT_DATASET_ROOT = Path("/home/hnvlab/three/dataset")
 
 
 HTML = r"""
@@ -87,7 +87,6 @@ HTML = r"""
     .metric.ok strong { color: var(--ok); }
     .metric.bad strong { color: var(--bad); }
 
-    .path-toolbar,
     .toolbar {
       display: grid;
       grid-template-columns: 170px minmax(220px, 1fr) auto auto;
@@ -100,8 +99,6 @@ HTML = r"""
       padding: 12px;
       margin-bottom: 12px;
     }
-
-    .path-toolbar { grid-template-columns: minmax(260px, 1fr) auto; }
 
     select, input, button {
       height: 38px;
@@ -125,6 +122,28 @@ HTML = r"""
     button.secondary { background: #fff; color: var(--accent); }
     button:disabled { cursor: not-allowed; opacity: 0.45; }
 
+
+    .filter-panel {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 8px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .filter-panel label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .filter-panel label input,
+    .filter-panel label select {
+      font-size: 14px;
+    }
     .content {
       display: grid;
       grid-template-columns: 260px minmax(0, 1fr);
@@ -258,9 +277,11 @@ HTML = r"""
     @media (max-width: 920px) {
       header, main { padding-left: 14px; padding-right: 14px; }
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .path-toolbar,
-    .toolbar { grid-template-columns: 1fr; }
-      .content { grid-template-columns: 1fr; }
+      .toolbar { grid-template-columns: 1fr; }
+      .filter-panel { grid-template-columns: 1fr; }
+
+
+    .content { grid-template-columns: 1fr; }
       .position-list { max-height: 260px; }
     }
   </style>
@@ -268,26 +289,41 @@ HTML = r"""
 <body>
   <header>
     <h1>ThreeCushion Dataset Labels</h1>
-    <div class="root-path" id="rootPath">데이터셋 경로를 입력하고 적용하세요.</div>
+    <div class="root-path" id="rootPath">/home/hnvlab/three/dataset</div>
   </header>
   <main>
-    <section class="path-toolbar">
-      <input id="datasetRootInput" placeholder="데이터셋 경로 입력: E:\password_data\dataset 또는 /mnt/e/password_data/dataset" autocomplete="off" />
-      <button id="checkBtn">경로 적용</button>
-    </section>
-    
-
-    <section class="toolbar">
+<section class="toolbar">
       <select id="mode">
         <option value="auto">자동 검색</option>
         <option value="video">영상명/경로</option>
         <option value="position">포지션</option>
+        <option value="flag">1/0</option>
       </select>
       <input id="query" placeholder="예: 뒤돌리기 또는 00020002-y-play.mp4" autocomplete="off" />
-      <button id="searchBtn" disabled>검색</button>
-      <button class="secondary" id="verifyBtn" disabled>재점검</button>
+      <button id="searchBtn">검색</button>
+      <button class="secondary" id="verifyBtn">새로고침</button>
     </section>
 
+
+    <section class="filter-panel">
+      <label>폴더<select id="folderFilter"><option value="">전체 폴더</option></select></label>
+      <label>영상<input id="videoFilter" placeholder="영상명/경로" /></label>
+      <label>번호<input id="numberFilter" placeholder="예: 00010001" /></label>
+      <label>색상<select id="colorFilter"><option value="">전체</option><option value="w">w</option><option value="y">y</option><option value="n">n</option></select></label>
+      <label>포지션<input id="positionFilter" placeholder="예: 뒤돌리기" /></label>
+      <label>1/0<select id="flagFilter"><option value="">전체</option><option value="1">1</option><option value="0">0</option></select></label>
+      <label>원본라벨<input id="rawFilter" placeholder="라벨 텍스트" /></label>
+      <label>정렬<select id="sortField">
+        <option value="folder">폴더</option>
+        <option value="video">영상</option>
+        <option value="number">번호</option>
+        <option value="color">색상</option>
+        <option value="position">포지션</option>
+        <option value="flag">1/0</option>
+        <option value="raw">원본라벨</option>
+      </select></label>
+      <label>방향<select id="sortDir"><option value="asc">오름차순</option><option value="desc">내림차순</option></select></label>
+    </section>
     <section class="content">
       <aside class="panel">
         <h2>포지션 목록</h2>
@@ -295,7 +331,7 @@ HTML = r"""
       </aside>
       <section class="panel">
         <div class="results-head">
-          <div class="status-text" id="resultStatus">경로 적용 후 검색할 수 있습니다.</div>
+          <div class="status-text" id="resultStatus">검색할 수 있습니다.</div>
           <div id="resultCount"></div>
         </div>
         <div class="video-preview" id="videoPreview">
@@ -307,13 +343,13 @@ HTML = r"""
           <table>
             <thead>
               <tr>
+                <th>폴더</th>
                 <th>영상</th>
+                <th>번호</th>
+                <th>색상</th>
                 <th>포지션</th>
-                <th>flag</th>
-                <th>라인</th>
-                <th>key</th>
+                <th>1/0</th>
                 <th>원본 라벨</th>
-                <th>영상 존재</th>
               </tr>
             </thead>
             <tbody id="results"><tr><td colspan="7" class="empty">검색어를 입력하세요.</td></tr></tbody>
@@ -325,8 +361,6 @@ HTML = r"""
 
   <script>
     const rootPath = document.getElementById('rootPath');
-    const datasetRootInput = document.getElementById('datasetRootInput');
-    const checkBtn = document.getElementById('checkBtn');
     const searchBtn = document.getElementById('searchBtn');
     const verifyBtn = document.getElementById('verifyBtn');
     const positions = document.getElementById('positions');
@@ -339,7 +373,18 @@ HTML = r"""
     const videoTitle = document.getElementById('videoTitle');
     const videoMeta = document.getElementById('videoMeta');
     const videoPlayer = document.getElementById('videoPlayer');
-    let verifiedRoot = '';
+    const fixedRoot = '/home/hnvlab/three/dataset';
+    const folderFilter = document.getElementById('folderFilter');
+    const videoFilter = document.getElementById('videoFilter');
+    const numberFilter = document.getElementById('numberFilter');
+    const colorFilter = document.getElementById('colorFilter');
+    const positionFilter = document.getElementById('positionFilter');
+    const flagFilter = document.getElementById('flagFilter');
+    const rawFilter = document.getElementById('rawFilter');
+    const sortField = document.getElementById('sortField');
+    const sortDir = document.getElementById('sortDir');
+    let allRows = [];
+    let verifiedRoot = fixedRoot;
 
     function escapeHtml(value) {
       return String(value ?? '').replace(/[&<>'"]/g, ch => ({
@@ -369,6 +414,66 @@ HTML = r"""
       });
     }
 
+
+    function populateFolderFilter(rows) {
+      const folders = Array.from(new Set(rows.map(row => row.folder).filter(Boolean))).sort();
+      folderFilter.innerHTML = '<option value="">전체 폴더</option>' + folders.map(folder => `
+        <option value="${escapeHtml(folder)}">${escapeHtml(folder)}</option>
+      `).join('');
+    }
+
+    function includesText(value, needle) {
+      if (!needle) return true;
+      return String(value ?? '').toLowerCase().includes(needle.toLowerCase());
+    }
+
+    function compareRows(a, b, field) {
+      const av = a[field] ?? '';
+      const bv = b[field] ?? '';
+      if (field === 'line') return Number(av || 0) - Number(bv || 0);
+      return String(av).localeCompare(String(bv), 'ko', { numeric: true, sensitivity: 'base' });
+    }
+
+    function currentFilteredRows() {
+      const q = query.value.trim();
+      const selectedMode = mode.value;
+      let rows = allRows.filter(row => {
+        const queryOk = !q
+          || (selectedMode === 'position' && includesText(row.position, q))
+          || (selectedMode === 'video' && includesText(row.video, q))
+          || (selectedMode === 'auto' && (
+            includesText(row.video, q)
+            || includesText(row.number, q)
+            || includesText(row.color, q)
+            || includesText(row.position, q)
+            || includesText(row.flag, q)
+            || includesText(row.raw, q)
+            || includesText(row.folder, q)
+          ));
+
+        return queryOk
+          && (!folderFilter.value || row.folder === folderFilter.value)
+          && includesText(row.video, videoFilter.value.trim())
+          && includesText(row.number, numberFilter.value.trim())
+          && (!colorFilter.value || row.color === colorFilter.value)
+          && includesText(row.position, positionFilter.value.trim())
+          && (!flagFilter.value || String(row.flag) === flagFilter.value)
+          && includesText(row.raw, rawFilter.value.trim());
+      });
+
+      rows.sort((a, b) => compareRows(a, b, sortField.value));
+      if (sortDir.value === 'desc') rows.reverse();
+      return rows;
+    }
+
+    function applyFilters() {
+      if (!allRows.length) {
+        results.innerHTML = '<tr><td colspan="7" class="empty">데이터셋을 불러오는 중입니다.</td></tr>';
+        return;
+      }
+      const rows = currentFilteredRows();
+      renderResults({ query: query.value.trim() || '전체', matches: rows, message: '필터 결과' });
+    }
     function renderResults(data) {
       resultStatus.textContent = data.message || `${data.query} 검색 결과`;
       resultCount.textContent = `${data.matches.length}개`;
@@ -378,13 +483,13 @@ HTML = r"""
       }
       results.innerHTML = data.matches.map((row, index) => `
         <tr>
+          <td>${escapeHtml(row.folder || '')}</td>
           <td class="path"><button class="video-link" data-index="${index}">${escapeHtml(row.video)}</button></td>
+          <td>${escapeHtml(row.number || '')}</td>
+          <td><span class="pill">${escapeHtml(row.color || '')}</span></td>
           <td>${escapeHtml(row.position || '')}</td>
           <td><span class="pill">${escapeHtml(row.flag || '')}</span></td>
-          <td>${escapeHtml(row.line || '')}</td>
-          <td>${escapeHtml(row.key || '')}</td>
           <td class="raw">${escapeHtml(row.raw || '')}</td>
-          <td>${row.video_exists ? 'True' : 'False'}</td>
         </tr>
       `).join('');
       results.querySelectorAll('.video-link').forEach(button => {
@@ -400,10 +505,10 @@ HTML = r"""
       const src = `/api/video?${rootQuery()}&path=${encodeURIComponent(row.video)}`;
       videoTitle.textContent = row.video;
       videoMeta.innerHTML = `
+        <dt>번호</dt><dd>${escapeHtml(row.number || '')}</dd>
+        <dt>색상</dt><dd>${escapeHtml(row.color || '')}</dd>
         <dt>포지션</dt><dd>${escapeHtml(row.position || '')}</dd>
-        <dt>flag</dt><dd>${escapeHtml(row.flag || '')}</dd>
-        <dt>라인</dt><dd>${escapeHtml(row.line || '')}</dd>
-        <dt>key</dt><dd>${escapeHtml(row.key || '')}</dd>
+        <dt>1/0</dt><dd>${escapeHtml(row.flag || '')}</dd>
         <dt>원본 라벨</dt><dd>${escapeHtml(row.raw || '')}</dd>
         <dt>positions.txt</dt><dd>${escapeHtml(row.positions_txt || '')}</dd>
       `;
@@ -413,7 +518,7 @@ HTML = r"""
     }
 
     function currentRoot() {
-      return datasetRootInput.value.trim();
+      return fixedRoot;
     }
 
     function rootQuery() {
@@ -428,37 +533,30 @@ HTML = r"""
     }
 
     async function verify() {
-      const root = currentRoot();
-      if (!root) {
-        resultStatus.textContent = '데이터셋 경로를 입력하세요.';
-        datasetRootInput.focus();
-        return;
-      }
-
       setSearchEnabled(false);
-      verifiedRoot = '';
+      verifiedRoot = fixedRoot;
       positions.innerHTML = '';
       videoPlayer.removeAttribute('src');
       videoMeta.innerHTML = '';
       videoPreview.classList.remove('active');
-      results.innerHTML = '<tr><td colspan="7" class="empty">경로 확인중...</td></tr>';
+      results.innerHTML = '<tr><td colspan="7" class="empty">로딩중...</td></tr>';
       resultCount.textContent = '';
-      rootPath.textContent = root;
-      resultStatus.textContent = '경로 확인중...';
+      rootPath.textContent = fixedRoot;
+      resultStatus.textContent = '포지션 목록 로딩중...';
 
       try {
         const data = await loadJson(`/api/positions?${rootQuery()}`);
-        verifiedRoot = root;
         renderPositions(data.positions);
+        const labelData = await loadJson(`/api/labels?${rootQuery()}`);
+        allRows = labelData.rows;
+        populateFolderFilter(allRows);
         setSearchEnabled(true);
-        rootPath.textContent = root;
-        resultStatus.textContent = `경로 적용 완료. 포지션 ${data.positions.length}개를 불러왔습니다.`;
-        results.innerHTML = '<tr><td colspan="7" class="empty">검색어를 입력하세요.</td></tr>';
+        resultStatus.textContent = `포지션 ${data.positions.length}개, 라벨 ${allRows.length}개를 불러왔습니다.`;
+        applyFilters();
       } catch (err) {
         positions.innerHTML = '';
-        rootPath.textContent = root;
         resultStatus.textContent = err.message;
-        results.innerHTML = '<tr><td colspan="7" class="empty">경로 확인 실패</td></tr>';
+        results.innerHTML = '<tr><td colspan="7" class="empty">데이터셋을 불러오지 못했습니다.</td></tr>';
         setSearchEnabled(false);
       }
     }
@@ -469,39 +567,30 @@ HTML = r"""
     }
 
     async function search() {
-      const q = query.value.trim();
       if (!verifiedRoot) {
-        resultStatus.textContent = '경로를 먼저 적용하세요.';
+        resultStatus.textContent = '데이터셋을 불러오는 중입니다.';
         return;
       }
-      if (!q) return;
-      resultStatus.textContent = '검색중...';
-      resultCount.textContent = '';
-      try {
-        const data = await loadJson(`/api/search?${rootQuery()}&mode=${encodeURIComponent(mode.value)}&q=${encodeURIComponent(q)}`);
-        renderResults(data);
-      } catch (err) {
-        resultStatus.textContent = err.message;
-        results.innerHTML = '<tr><td colspan="7" class="empty">검색 실패</td></tr>';
-      }
+      applyFilters();
     }
-
-    checkBtn.addEventListener('click', verify);
     searchBtn.addEventListener('click', search);
     verifyBtn.addEventListener('click', verify);
-    datasetRootInput.addEventListener('keydown', event => {
-      if (event.key === 'Enter') verify();
-    });
     query.addEventListener('keydown', event => {
       if (event.key === 'Enter') search();
     });
 
+    
+    [folderFilter, videoFilter, numberFilter, colorFilter, positionFilter, flagFilter, rawFilter, sortField, sortDir, mode].forEach(control => {
+      control.addEventListener('input', applyFilters);
+      control.addEventListener('change', applyFilters);
+    });
+
     (async function init() {
       setSearchEnabled(false);
-      datasetRootInput.value = '';
-      positions.innerHTML = '<div class="empty">경로 적용 후 표시됩니다.</div>';
-      rootPath.textContent = '데이터셋 경로를 입력하고 적용하세요.';
-      resultStatus.textContent = '경로 적용 전입니다.';
+      rootPath.textContent = fixedRoot;
+      positions.innerHTML = '<div class="empty">포지션 목록 로딩중...</div>';
+      resultStatus.textContent = '포지션 목록 로딩중...';
+      await verify();
     })();
   </script>
 </body>
@@ -539,18 +628,30 @@ def resolve_dataset_root(raw_root: str | None) -> Path:
 
 def get_root_from_params(params: dict[str, list[str]]) -> Path:
     return resolve_dataset_root((params.get("root") or [None])[0])
+
+
+def split_label_key(key: str) -> tuple[str, str]:
+    number, separator, color = key.rpartition("-")
+    if not separator:
+        return key, ""
+    return number, color
+
+
 def label_to_dict(video_path: Path, row, video_exists: bool = True) -> dict[str, object]:
+    number, color = split_label_key(row.key) if row else ("", "")
     return {
         "video": str(video_path),
+        "folder": video_path.parent.name,
         "video_exists": video_exists,
         "positions_txt": str(row.folder / "positions.txt") if row else "",
         "line": row.line_no if row else "",
+        "number": number,
+        "color": color,
         "key": row.key if row else "",
         "position": row.position if row else "",
         "flag": row.flag if row else "",
         "raw": row.raw_line if row else "",
     }
-
 
 def dataset_status(dataset_root: Path) -> dict[str, object]:
     if not dataset_root.exists():
@@ -644,6 +745,18 @@ def resolve_video_file(dataset_root: Path, raw_video_path: str) -> Path | None:
         return None
 
     return video_path
+
+def all_label_rows(dataset_root: Path) -> list[dict[str, object]]:
+    rows_out: list[dict[str, object]] = []
+    for folder in iter_sample_folders(dataset_root):
+        position_file = folder / "positions.txt"
+        if not position_file.exists():
+            continue
+        rows, _ = parse_positions_file(position_file)
+        for row in rows:
+            video_path = row.folder / row.expected_video_name
+            rows_out.append(label_to_dict(video_path, row, video_path.exists()))
+    return rows_out
 def search_video_rows(dataset_root: Path, query: str) -> list[dict[str, object]]:
     query_lower = query.lower()
     path_like = is_path_like_query(query)
@@ -795,6 +908,14 @@ class DatasetLabelHandler(BaseHTTPRequestHandler):
             self.send_json({"positions": position_counts(root)})
             return
 
+        if parsed.path == "/api/labels":
+            params = parse_qs(parsed.query)
+            root = get_root_from_params(params)
+            if not root.exists():
+                self.send_json({"error": f"Dataset root not found: {root}"}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"rows": all_label_rows(root)})
+            return
         if parsed.path == "/api/search":
             params = parse_qs(parsed.query)
             root = get_root_from_params(params)
@@ -823,7 +944,8 @@ class DatasetLabelHandler(BaseHTTPRequestHandler):
 def main() -> int:
     server = ThreadingHTTPServer((HOST, PORT), DatasetLabelHandler)
     print("웹 UI 서버를 시작합니다.")
-    print(f"http://{HOST}:{PORT}")
+    print(f"http://127.0.0.1:{PORT}")
+    print(f"listening on {HOST}:{PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -835,3 +957,20 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
